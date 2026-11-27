@@ -8,12 +8,15 @@ import * as dom from '../../../../../base/browser/dom.js';
 import { HighlightedLabel } from '../../../../../base/browser/ui/highlightedlabel/highlightedLabel.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { CommandsRegistry } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
+import { COPY_VALUE_ID } from '../../browser/debugCommands.js';
 import { DebugExpressionRenderer } from '../../browser/debugExpressionRenderer.js';
 import { VariablesRenderer } from '../../browser/variablesView.js';
 import { IDebugService, IViewModel } from '../../common/debug.js';
@@ -85,13 +88,14 @@ suite('Debug - Variable Debug View', () => {
 	let instantiationService: TestInstantiationService;
 	let expressionRenderer: DebugExpressionRenderer;
 	let configurationService: TestConfigurationService;
+	let debugService: MockDebugService;
 
 	setup(() => {
 		instantiationService = workbenchInstantiationService(undefined, disposables);
 		configurationService = instantiationService.createInstance(TestConfigurationService);
 		instantiationService.stub(IConfigurationService, configurationService);
 		expressionRenderer = instantiationService.createInstance(DebugExpressionRenderer);
-		const debugService = new MockDebugService();
+		debugService = new MockDebugService();
 		instantiationService.stub(IHoverService, NullHoverService);
 		debugService.getViewModel = () => <IViewModel>{ focusedStackFrame: undefined, getSelectedExpression: () => undefined };
 		debugService.getViewModel().getSelectedExpression = () => undefined;
@@ -110,5 +114,64 @@ suite('Debug - Variable Debug View', () => {
 		instantiationService.stub(IConfigurationService, configurationService);
 		variablesRenderer = instantiationService.createInstance(VariablesRenderer, expressionRenderer);
 		assertVariable(disposables, variablesRenderer, false);
+	});
+
+	test('copies the original value when clipboard evaluation omits aggregate details', async () => {
+		const session = new MockSession();
+		session.capabilities = { supportsClipboardContext: true };
+		let evaluatedExpression: string | undefined;
+		session.evaluate = async expression => {
+			evaluatedExpression = expression;
+			return { body: { result: '{...}', variablesReference: 0 } };
+		};
+
+		const thread = new Thread(session, 'mockthread', 1);
+		const range = {
+			startLineNumber: 1,
+			startColumn: 1,
+			endLineNumber: undefined!,
+			endColumn: undefined!
+		};
+		const stackFrame = new StackFrame(thread, 1, null!, 'app.js', 'normal', range, 0, true);
+		const scope = new Scope(stackFrame, 1, 'Registers', 1, false, 10, 10);
+		const value = '{EXC = 0x0, ICI/IT = 0x0, GE = 0x0, T = 0x1}';
+		const variable = new Variable(session, 1, scope, 2, 'cpsr', 'cpsr', value, 0, 0, undefined, {}, 'register');
+		debugService.getViewModel = () => <IViewModel>{ focusedStackFrame: stackFrame, focusedSession: session };
+		let clipboardText: string | undefined;
+		instantiationService.stub(IClipboardService, {
+			writeText: async text => {
+				clipboardText = text;
+			}
+		});
+
+		await instantiationService.invokeFunction(accessor => CommandsRegistry.getCommand(COPY_VALUE_ID)!.handler(accessor, variable));
+
+		assert.deepStrictEqual({ clipboardText, evaluatedExpression }, { clipboardText: value, evaluatedExpression: 'cpsr' });
+	});
+
+	test('copies a variable value directly when it has no evaluate name', async () => {
+		const session = new MockSession();
+		const thread = new Thread(session, 'mockthread', 1);
+		const range = {
+			startLineNumber: 1,
+			startColumn: 1,
+			endLineNumber: undefined!,
+			endColumn: undefined!
+		};
+		const stackFrame = new StackFrame(thread, 1, null!, 'app.js', 'normal', range, 0, true);
+		const scope = new Scope(stackFrame, 1, 'Registers', 1, false, 10, 10);
+		const value = '{EXC = 0x0, ICI/IT = 0x0, GE = 0x0, T = 0x1}';
+		const variable = new Variable(session, 1, scope, 2, 'cpsr', undefined, value, 0, 0, undefined, {}, 'register');
+		debugService.getViewModel = () => <IViewModel>{ focusedStackFrame: stackFrame, focusedSession: session };
+		let clipboardText: string | undefined;
+		instantiationService.stub(IClipboardService, {
+			writeText: async text => {
+				clipboardText = text;
+			}
+		});
+
+		await instantiationService.invokeFunction(accessor => CommandsRegistry.getCommand(COPY_VALUE_ID)!.handler(accessor, variable));
+
+		assert.strictEqual(clipboardText, value);
 	});
 });

@@ -716,11 +716,18 @@ CommandsRegistry.registerCommand({
 		}
 
 		const evalContext = session.capabilities.supportsClipboardContext ? 'clipboard' : elementContext;
-		const toEvaluate = elements.map(element => element instanceof Variable ? (element.evaluateName || element.value) : element.name);
-
 		try {
-			const evaluations = await Promise.all(toEvaluate.map(expr => session.evaluate(expr, stackFrame.frameId, evalContext)));
-			const result = coalesce(evaluations).map(evaluation => evaluation.body.result);
+			const evaluations = await Promise.all(elements.map(element => {
+				const expression = element instanceof Variable ? element.evaluateName : element.name;
+				return expression ? session.evaluate(expression, stackFrame.frameId, evalContext) : Promise.resolve(undefined);
+			}));
+			const result = coalesce(evaluations.map((evaluation, index) => {
+				const element = elements[index];
+				if (element instanceof Variable && (!element.evaluateName || evaluation?.body.result === '{...}')) {
+					return element.value;
+				}
+				return evaluation?.body.result;
+			}));
 			if (result.length) {
 				clipboardService.writeText(result.join('\n'));
 			}
